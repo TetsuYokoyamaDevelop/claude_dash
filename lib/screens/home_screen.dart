@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import '../models/project.dart';
 import '../services/claude_session.dart';
 import '../services/project_store.dart';
+import '../services/git_service.dart';
 import '../services/settings_service.dart';
 import '../widgets/add_project_dialog.dart';
 import '../widgets/terminal_tab.dart';
@@ -24,8 +25,10 @@ class _HomeScreenState extends State<HomeScreen> {
   final List<Project> _projects = [];
   final Map<String, ClaudeSession> _sessions = {};
   final Map<String, StreamSubscription> _attentionSubs = {};
+  final Map<String, String> _branches = {};
   int _selectedIndex = -1;
   bool _autoSwitchEnabled = true;
+  Timer? _branchPollTimer;
 
   @override
   void initState() {
@@ -33,6 +36,10 @@ class _HomeScreenState extends State<HomeScreen> {
     _loadProjects();
     _loadSettings();
     _channel.setMethodCallHandler(_onShortcut);
+    _branchPollTimer = Timer.periodic(
+      const Duration(seconds: 5),
+      (_) => _refreshBranches(),
+    );
   }
 
   Future<void> _loadSettings() async {
@@ -73,10 +80,11 @@ class _HomeScreenState extends State<HomeScreen> {
       _projects.addAll(projects);
       if (_projects.isNotEmpty) _selectedIndex = 0;
     });
-    // Start sessions eagerly for loaded projects
+    // Start sessions eagerly and fetch branches for loaded projects
     for (final project in projects) {
       _ensureSession(project);
     }
+    _refreshBranches();
   }
 
   void _addProject() async {
@@ -157,8 +165,69 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {});
   }
 
+  Future<void> _refreshBranches() async {
+    bool changed = false;
+    for (final project in _projects) {
+      final branch = await GitService.currentBranch(project.path);
+      if (branch != null && _branches[project.path] != branch) {
+        _branches[project.path] = branch;
+        changed = true;
+      }
+    }
+    if (changed && mounted) setState(() {});
+  }
+
+  Future<void> _showBranchPicker(Project project) async {
+    final branches = await GitService.listBranches(project.path);
+    if (branches.isEmpty || !mounted) return;
+    final current = _branches[project.path];
+
+    final selected = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(
+        MediaQuery.of(context).size.width - 300,
+        44,
+        0,
+        0,
+      ),
+      color: const Color(0xFF252525),
+      items: branches.map((b) {
+        final isCurrent = b == current;
+        return PopupMenuItem<String>(
+          value: b,
+          child: Row(
+            children: [
+              Icon(
+                isCurrent ? Icons.check : Icons.circle_outlined,
+                size: 14,
+                color: isCurrent ? Colors.blueAccent : Colors.grey.shade600,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                b,
+                style: TextStyle(
+                  color: isCurrent ? Colors.blueAccent : Colors.white,
+                  fontSize: 13,
+                ),
+              ),
+            ],
+          ),
+        );
+      }).toList(),
+    );
+
+    if (selected != null && selected != current) {
+      final ok = await GitService.checkout(project.path, selected);
+      if (ok) {
+        _branches[project.path] = selected;
+        if (mounted) setState(() {});
+      }
+    }
+  }
+
   @override
   void dispose() {
+    _branchPollTimer?.cancel();
     for (final sub in _attentionSubs.values) {
       sub.cancel();
     }
@@ -236,14 +305,28 @@ class _HomeScreenState extends State<HomeScreen> {
                               shape: BoxShape.circle,
                             ),
                           ),
-                        Text(
-                          project.name,
-                          style: TextStyle(
-                            color: isSelected
-                                ? Colors.white
-                                : Colors.grey.shade500,
-                            fontSize: 13,
-                          ),
+                        Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              project.name,
+                              style: TextStyle(
+                                color: isSelected
+                                    ? Colors.white
+                                    : Colors.grey.shade500,
+                                fontSize: 13,
+                              ),
+                            ),
+                            if (_branches[project.path] != null)
+                              Text(
+                                _branches[project.path]!,
+                                style: TextStyle(
+                                  color: Colors.grey.shade600,
+                                  fontSize: 10,
+                                ),
+                              ),
+                          ],
                         ),
                         const SizedBox(width: 8),
                         InkWell(
@@ -283,13 +366,39 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
               if (_selectedIndex >= 0 &&
-                  _selectedIndex < _projects.length)
+                  _selectedIndex < _projects.length) ...[
+                Tooltip(
+                  message: _branches[_projects[_selectedIndex].path] ?? '',
+                  child: InkWell(
+                    onTap: () => _showBranchPicker(_projects[_selectedIndex]),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        border: Border.all(color: Colors.grey.shade700),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.account_tree, size: 14, color: Colors.grey.shade500),
+                          const SizedBox(width: 4),
+                          Text(
+                            _branches[_projects[_selectedIndex].path] ?? '...',
+                            style: TextStyle(color: Colors.grey.shade400, fontSize: 12),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 4),
                 IconButton(
                   onPressed: () => _restartSession(_projects[_selectedIndex]),
                   icon: const Icon(Icons.refresh, size: 18),
                   color: Colors.grey.shade500,
                   tooltip: 'セッション再起動',
                 ),
+              ],
               IconButton(
                 onPressed: _addProject,
                 icon: const Icon(Icons.add, size: 20),

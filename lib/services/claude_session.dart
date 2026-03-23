@@ -36,10 +36,13 @@ class ClaudeSession {
   // Patterns that indicate Claude is asking for permission
   static final _permissionPatterns = [
     RegExp(r'requires\s+approval', caseSensitive: false),
-    RegExp(r'Do\s+you\s+want\s+to\s+proceed', caseSensitive: false),
+    RegExp(r'Do\s+you\s+want\s+to\s+\w+', caseSensitive: false),
     RegExp(r'Allow|Deny', caseSensitive: true),
     RegExp(r'yes/no', caseSensitive: false),
     RegExp(r'\(Y/n\)|\(y/N\)|\[Y/n\]|\[y/N\]', caseSensitive: false),
+    // Japanese confirmation prompts — ますか？/ ですか？ covers most polite questions
+    RegExp(r'ますか[？?]'),
+    RegExp(r'ですか[？?]'),
   ];
 
   // Strip ALL terminal escape sequences (CSI, OSC, DCS, private modes, etc.)
