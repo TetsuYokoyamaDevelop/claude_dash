@@ -33,14 +33,26 @@ class ClaudeSession {
   String _outputBuffer = '';
   static const _bufferMaxLen = 2000;
 
-  // Patterns that indicate Claude is asking for permission
+  // Patterns that indicate Claude is asking for permission or waiting for input.
+  // Sourced from Claude Code v2.1.81 cli.js.
   static final _permissionPatterns = [
+    // Tool permission system
     RegExp(r'requires\s+approval', caseSensitive: false),
+    RegExp(r'awaiting\s+approval', caseSensitive: false),
+    // English confirmation questions (covers all variants)
     RegExp(r'Do\s+you\s+want\s+to\s+\w+', caseSensitive: false),
+    RegExp(r'Would\s+you\s+like\s+to\s+\w+', caseSensitive: false),
+    RegExp(r'Are\s+you\s+sure', caseSensitive: false),
+    // Interactive confirmation UI
+    RegExp(r'Enter\s+to\s+confirm', caseSensitive: false),
+    RegExp(r'waiting\s+for\s+your\s+input', caseSensitive: false),
+    // Plan mode
+    RegExp(r'Enter\s+plan\s+mode\?', caseSensitive: false),
+    // Legacy / generic
     RegExp(r'Allow|Deny', caseSensitive: true),
     RegExp(r'yes/no', caseSensitive: false),
     RegExp(r'\(Y/n\)|\(y/N\)|\[Y/n\]|\[y/N\]', caseSensitive: false),
-    // Japanese confirmation prompts — ますか？/ ですか？ covers most polite questions
+    // Japanese confirmation prompts
     RegExp(r'ますか[？?]'),
     RegExp(r'ですか[？?]'),
   ];
