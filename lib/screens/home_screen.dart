@@ -4,8 +4,12 @@ import 'package:flutter/services.dart';
 import '../models/project.dart';
 import '../services/claude_session.dart';
 import '../services/project_store.dart';
+import '../services/settings_service.dart';
 import '../widgets/add_project_dialog.dart';
 import '../widgets/terminal_tab.dart';
+
+// Re-export debugLog from claude_session
+export '../services/claude_session.dart' show debugLog;
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -21,12 +25,24 @@ class _HomeScreenState extends State<HomeScreen> {
   final Map<String, ClaudeSession> _sessions = {};
   final Map<String, StreamSubscription> _attentionSubs = {};
   int _selectedIndex = -1;
+  bool _autoSwitchEnabled = true;
 
   @override
   void initState() {
     super.initState();
     _loadProjects();
+    _loadSettings();
     _channel.setMethodCallHandler(_onShortcut);
+  }
+
+  Future<void> _loadSettings() async {
+    final value = await SettingsService.getAutoSwitch();
+    setState(() => _autoSwitchEnabled = value);
+  }
+
+  void _toggleAutoSwitch() {
+    setState(() => _autoSwitchEnabled = !_autoSwitchEnabled);
+    SettingsService.setAutoSwitch(_autoSwitchEnabled);
   }
 
   Future<dynamic> _onShortcut(MethodCall call) async {
@@ -57,6 +73,10 @@ class _HomeScreenState extends State<HomeScreen> {
       _projects.addAll(projects);
       if (_projects.isNotEmpty) _selectedIndex = 0;
     });
+    // Start sessions eagerly for loaded projects
+    for (final project in projects) {
+      _ensureSession(project);
+    }
   }
 
   void _addProject() async {
@@ -98,11 +118,30 @@ class _HomeScreenState extends State<HomeScreen> {
       final session = ClaudeSession(project: project);
       _sessions[key] = session;
 
-      _attentionSubs[key] = session.attentionStream.listen((_) {
+      // Direct callback — fires synchronously from the session when attention changes
+      session.onAttentionChanged = (needsAttention) {
+        debugLog('[CALLBACK] needsAttention=$needsAttention autoSwitch=$_autoSwitchEnabled mounted=$mounted project=${project.name} selectedIndex=$_selectedIndex');
+        if (!mounted) return;
+        if (needsAttention && _autoSwitchEnabled) {
+          final index =
+              _projects.indexWhere((p) => p.path == project.path);
+          debugLog('[CALLBACK] found index=$index for ${project.name}');
+          if (index >= 0 && index != _selectedIndex) {
+            debugLog('[CALLBACK] switching to tab $index');
+            _selectTab(index);
+            return;
+          }
+        }
         setState(() {});
+      };
+
+      // Stream listener as fallback for UI updates (e.g. attention dot)
+      _attentionSubs[key] = session.attentionStream.listen((_) {
+        if (mounted) setState(() {});
       });
 
       await session.start();
+      if (mounted) setState(() {});
     }
     return _sessions[key]!;
   }
@@ -226,6 +265,23 @@ class _HomeScreenState extends State<HomeScreen> {
           Row(
             mainAxisSize: MainAxisSize.min,
             children: [
+              Tooltip(
+                message: _autoSwitchEnabled
+                    ? '自動タブ切替: ON'
+                    : '自動タブ切替: OFF',
+                child: IconButton(
+                  onPressed: _toggleAutoSwitch,
+                  icon: Icon(
+                    _autoSwitchEnabled
+                        ? Icons.swap_horiz
+                        : Icons.swap_horiz,
+                    size: 18,
+                  ),
+                  color: _autoSwitchEnabled
+                      ? Colors.orangeAccent
+                      : Colors.grey.shade600,
+                ),
+              ),
               if (_selectedIndex >= 0 &&
                   _selectedIndex < _projects.length)
                 IconButton(
@@ -282,9 +338,13 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (session == null) {
       // Session not yet created, kick off creation
-      _ensureSession(project).then((_) {
-        if (mounted) setState(() {});
-      });
+      _ensureSession(project);
+      return const Center(
+        child: CircularProgressIndicator(color: Colors.blueAccent),
+      );
+    }
+
+    if (session.isStarting && !session.isRunning) {
       return const Center(
         child: CircularProgressIndicator(color: Colors.blueAccent),
       );

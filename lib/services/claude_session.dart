@@ -1,10 +1,18 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show Platform, Process;
+import 'dart:developer' as developer;
+import 'dart:io' show Platform, Process, stderr;
 import 'package:flutter_pty/flutter_pty.dart';
 import 'package:xterm/xterm.dart';
 import '../models/project.dart';
 import 'notification_service.dart';
+
+void debugLog(String msg) {
+  final ts = DateTime.now().toIso8601String().substring(11, 23);
+  final line = '[$ts] $msg';
+  stderr.writeln(line);
+  developer.log(line, name: 'ClaudeDash');
+}
 
 /// Manages a single Claude CLI session for a project.
 class ClaudeSession {
@@ -13,6 +21,9 @@ class ClaudeSession {
   Pty? _pty;
   bool _needsAttention = false;
   final _attentionController = StreamController<bool>.broadcast();
+
+  /// Direct callback for attention changes — more reliable than stream alone.
+  void Function(bool needsAttention)? onAttentionChanged;
 
   Stream<bool> get attentionStream => _attentionController.stream;
   bool get needsAttention => _needsAttention;
@@ -24,11 +35,21 @@ class ClaudeSession {
 
   // Patterns that indicate Claude is asking for permission
   static final _permissionPatterns = [
+    RegExp(r'requires\s+approval', caseSensitive: false),
+    RegExp(r'Do\s+you\s+want\s+to\s+proceed', caseSensitive: false),
     RegExp(r'Allow|Deny', caseSensitive: true),
-    RegExp(r'Do you want to proceed', caseSensitive: false),
     RegExp(r'yes/no', caseSensitive: false),
     RegExp(r'\(Y/n\)|\(y/N\)|\[Y/n\]|\[y/N\]', caseSensitive: false),
   ];
+
+  // Strip ALL terminal escape sequences (CSI, OSC, DCS, private modes, etc.)
+  static final _ansiEscape = RegExp(
+    r'\x1B\[[\x20-\x3F]*[\x40-\x7E]'  // CSI sequences (includes ?-prefixed like ESC[?2026l)
+    r'|\x1B\][^\x07]*\x07'              // OSC sequences
+    r'|\x1B[()][A-Z0-9]'                // Character set selection
+    r'|\x1B[>=<#]'                       // Other ESC sequences
+    r'|\x1B\[\?[0-9;]*[a-zA-Z]'         // Private mode set/reset
+  );
 
   ClaudeSession({required this.project})
       : terminal = Terminal(maxLines: 10000);
@@ -36,24 +57,43 @@ class ClaudeSession {
   /// Find the directory containing the `claude` binary and ensure its
   /// node version is used (fixes nodebrew/nvm PATH ordering issues).
   static String? _cachedClaudeDir;
+  static bool _claudeDirSearched = false;
   static Future<String?> _findClaudeDir() async {
-    if (_cachedClaudeDir != null) return _cachedClaudeDir;
-    final result = await Process.run(
-      '/bin/zsh',
-      ['-l', '-c', 'which claude'],
-    );
-    final claudePath = (result.stdout as String).trim();
-    if (claudePath.isNotEmpty) {
-      // e.g. /Users/x/.nodebrew/current/bin/claude → .../bin
-      final dir = claudePath.substring(0, claudePath.lastIndexOf('/'));
-      _cachedClaudeDir = dir;
+    if (_claudeDirSearched) return _cachedClaudeDir;
+    try {
+      final result = await Process.run(
+        '/bin/zsh',
+        ['-l', '-c', 'which claude'],
+      ).timeout(const Duration(seconds: 10));
+      final claudePath = (result.stdout as String).trim();
+      if (claudePath.isNotEmpty && claudePath.contains('/')) {
+        final dir = claudePath.substring(0, claudePath.lastIndexOf('/'));
+        _cachedClaudeDir = dir;
+      }
+    } catch (_) {
+      // Timeout or error — proceed without custom PATH
     }
+    _claudeDirSearched = true;
     return _cachedClaudeDir;
   }
 
-  Future<void> start() async {
-    if (_pty != null) return;
+  bool _starting = false;
 
+  Future<void> start() async {
+    if (_pty != null || _starting) return;
+    _starting = true;
+
+    try {
+      await _startInternal();
+    } catch (e) {
+      terminal.write('\r\n[Failed to start session: $e]\r\n');
+      _pty = null;
+    } finally {
+      _starting = false;
+    }
+  }
+
+  Future<void> _startInternal() async {
     final shell = _resolveShell();
     final claudeDir = await _findClaudeDir();
 
@@ -104,6 +144,8 @@ class ClaudeSession {
     };
   }
 
+  bool get isStarting => _starting;
+
   void _detectPermissionPromptFromText(String text) {
     _outputBuffer += text;
     if (_outputBuffer.length > _bufferMaxLen) {
@@ -111,14 +153,22 @@ class ClaudeSession {
           _outputBuffer.substring(_outputBuffer.length - _bufferMaxLen);
     }
 
+    // Replace ANSI escape sequences with spaces (Claude Code uses cursor
+    // movement ESC[1C between words, so stripping to empty joins words)
+    final cleanBuffer = _outputBuffer
+        .replaceAll(_ansiEscape, ' ')
+        .replaceAll(RegExp(r' {2,}'), ' ');
+
     for (final pattern in _permissionPatterns) {
-      if (pattern.hasMatch(_outputBuffer)) {
+      if (pattern.hasMatch(cleanBuffer)) {
         if (!_needsAttention) {
           _needsAttention = true;
           _attentionController.add(true);
+          final cb = onAttentionChanged;
+          debugLog('[ATTENTION] project=${project.name} matched=${pattern.pattern} callback=${cb != null}');
+          cb?.call(true);
           NotificationService.showPermissionRequest(project.name);
         }
-        // Clear buffer after detection to avoid repeated triggers
         _outputBuffer = '';
         return;
       }
@@ -128,6 +178,7 @@ class ClaudeSession {
   void clearAttention() {
     _needsAttention = false;
     _attentionController.add(false);
+    onAttentionChanged?.call(false);
   }
 
   void stop() {
