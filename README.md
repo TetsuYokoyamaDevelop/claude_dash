@@ -1,17 +1,55 @@
-# claude_dash
+# Claude Dash
 
-A new Flutter project.
+macOS desktop app for managing multiple [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI sessions in one window.
 
-## Getting Started
+## Features
 
-This project is a starting point for a Flutter application.
+- **Tab-based sessions** - Run Claude Code CLI on multiple projects simultaneously
+- **Permission notifications** - macOS notifications when Claude needs approval (Allow/Deny)
+- **Attention badges** - Orange dot on tabs that need your input
+- **Keyboard shortcuts** - Native macOS menu shortcuts for fast tab switching
+- **Project persistence** - Projects are saved and restored on relaunch
+- **Full terminal emulation** - Powered by xterm + flutter_pty with UTF-8 support
 
-A few resources to get you started if this is your first Flutter project:
+## Keyboard Shortcuts
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+| Shortcut | Action |
+|----------|--------|
+| `Cmd+1` ~ `Cmd+9` | Switch to tab |
+| `Cmd+Shift+]` | Next tab |
+| `Cmd+Shift+[` | Previous tab |
+| `Cmd+T` | Add project |
+| `Cmd+W` | Close tab |
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+## Requirements
+
+- macOS
+- Flutter SDK (stable channel)
+- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed (`npm install -g @anthropic-ai/claude-code`)
+
+## Build & Run
+
+```bash
+git clone https://github.com/TetsuYokoyamaDevelop/claude_dash.git
+cd claude_dash
+flutter build macos
+open build/macos/Build/Products/Release/claude_dash.app
+```
+
+Optionally copy to Applications:
+
+```bash
+cp -R build/macos/Build/Products/Release/claude_dash.app /Applications/Claude\ Dash.app
+```
+
+## Tech Stack
+
+- **Framework**: Flutter (macOS desktop)
+- **Terminal**: xterm + flutter_pty
+- **Notifications**: local_notifier
+- **Persistence**: shared_preferences
+- **Native shortcuts**: NSMenuItem via MethodChannel
+
+## License
+
+MIT
