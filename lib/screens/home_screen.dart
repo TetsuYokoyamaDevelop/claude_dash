@@ -128,17 +128,23 @@ class _HomeScreenState extends State<HomeScreen> {
 
       // Direct callback — fires synchronously from the session when attention changes
       session.onAttentionChanged = (needsAttention) {
-        debugLog('[CALLBACK] needsAttention=$needsAttention autoSwitch=$_autoSwitchEnabled mounted=$mounted project=${project.name} selectedIndex=$_selectedIndex');
         if (!mounted) return;
         if (needsAttention && _autoSwitchEnabled) {
           final index =
               _projects.indexWhere((p) => p.path == project.path);
-          debugLog('[CALLBACK] found index=$index for ${project.name}');
           if (index >= 0 && index != _selectedIndex) {
-            debugLog('[CALLBACK] switching to tab $index');
-            _selectTab(index);
-            return;
+            // Only auto-switch if the current tab doesn't also need attention
+            final currentSession = _selectedIndex >= 0 && _selectedIndex < _projects.length
+                ? _sessions[_projects[_selectedIndex].path]
+                : null;
+            if (currentSession == null || !currentSession.needsAttention) {
+              _selectTab(index);
+              return;
+            }
           }
+        } else if (!needsAttention && _autoSwitchEnabled) {
+          // Attention was cleared on this session — check if another tab is waiting
+          _switchToNextAttentionTab();
         }
         setState(() {});
       };
@@ -237,10 +243,51 @@ class _HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
+  void _reorderProject(int oldIndex, int newIndex) {
+    setState(() {
+      if (newIndex > oldIndex) newIndex--;
+      final project = _projects.removeAt(oldIndex);
+      _projects.insert(newIndex, project);
+      // Update selected index to follow the selected tab
+      if (_selectedIndex == oldIndex) {
+        _selectedIndex = newIndex;
+      } else if (oldIndex < _selectedIndex && newIndex >= _selectedIndex) {
+        _selectedIndex--;
+      } else if (oldIndex > _selectedIndex && newIndex <= _selectedIndex) {
+        _selectedIndex++;
+      }
+    });
+    ProjectStore.save(_projects);
+  }
+
   void _selectTab(int index) {
     if (index < 0 || index >= _projects.length) return;
+    final prevIndex = _selectedIndex;
     setState(() => _selectedIndex = index);
     _sessions[_projects[index].path]?.clearAttention();
+
+    // If we just left a tab that no longer needs attention,
+    // check if another tab is still waiting
+    if (prevIndex != index && _autoSwitchEnabled) {
+      _switchToNextAttentionTab();
+    }
+  }
+
+  /// Switch to the next tab that needs attention (if any), called after
+  /// the user has dealt with the current attention tab.
+  void _switchToNextAttentionTab() {
+    // Don't switch if the current tab needs attention (user is handling it)
+    final currentSession = _sessions[_projects[_selectedIndex].path];
+    if (currentSession?.needsAttention == true) return;
+
+    for (int i = 0; i < _projects.length; i++) {
+      if (i == _selectedIndex) continue;
+      final session = _sessions[_projects[i].path];
+      if (session != null && session.needsAttention) {
+        _selectTab(i);
+        return;
+      }
+    }
   }
 
   @override
@@ -262,10 +309,20 @@ class _HomeScreenState extends State<HomeScreen> {
       color: const Color(0xFF1A1A1A),
       child: Row(
         children: [
-          // Project tabs
+          // Project tabs (drag to reorder)
           Expanded(
-            child: ListView.builder(
+            child: ReorderableListView.builder(
               scrollDirection: Axis.horizontal,
+              buildDefaultDragHandles: false,
+              proxyDecorator: (child, index, animation) {
+                return Material(
+                  color: Colors.transparent,
+                  elevation: 4,
+                  shadowColor: Colors.black54,
+                  child: child,
+                );
+              },
+              onReorder: _reorderProject,
               itemCount: _projects.length,
               itemBuilder: (context, index) {
                 final project = _projects[index];
@@ -273,71 +330,75 @@ class _HomeScreenState extends State<HomeScreen> {
                 final session = _sessions[project.path];
                 final hasAttention = session?.needsAttention ?? false;
 
-                return GestureDetector(
-                  onTap: () => _selectTab(index),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 16),
-                    decoration: BoxDecoration(
-                      color: isSelected
-                          ? const Color(0xFF0F0F0F)
-                          : Colors.transparent,
-                      border: Border(
-                        bottom: BorderSide(
-                          color: hasAttention
-                              ? Colors.orangeAccent
-                              : isSelected
-                                  ? Colors.blueAccent
-                                  : Colors.transparent,
-                          width: 2,
+                return ReorderableDragStartListener(
+                  key: ValueKey(project.path),
+                  index: index,
+                  child: GestureDetector(
+                    onTap: () => _selectTab(index),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      decoration: BoxDecoration(
+                        color: isSelected
+                            ? const Color(0xFF0F0F0F)
+                            : const Color(0xFF1A1A1A),
+                        border: Border(
+                          bottom: BorderSide(
+                            color: hasAttention
+                                ? Colors.orangeAccent
+                                : isSelected
+                                    ? Colors.blueAccent
+                                    : Colors.transparent,
+                            width: 2,
+                          ),
                         ),
                       ),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (hasAttention)
-                          Container(
-                            width: 8,
-                            height: 8,
-                            margin: const EdgeInsets.only(right: 6),
-                            decoration: const BoxDecoration(
-                              color: Colors.orangeAccent,
-                              shape: BoxShape.circle,
-                            ),
-                          ),
-                        Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              project.name,
-                              style: TextStyle(
-                                color: isSelected
-                                    ? Colors.white
-                                    : Colors.grey.shade500,
-                                fontSize: 13,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (hasAttention)
+                            Container(
+                              width: 8,
+                              height: 8,
+                              margin: const EdgeInsets.only(right: 6),
+                              decoration: const BoxDecoration(
+                                color: Colors.orangeAccent,
+                                shape: BoxShape.circle,
                               ),
                             ),
-                            if (_branches[project.path] != null)
+                          Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
                               Text(
-                                _branches[project.path]!,
+                                project.name,
                                 style: TextStyle(
-                                  color: Colors.grey.shade600,
-                                  fontSize: 10,
+                                  color: isSelected
+                                      ? Colors.white
+                                      : Colors.grey.shade500,
+                                  fontSize: 13,
                                 ),
                               ),
-                          ],
-                        ),
-                        const SizedBox(width: 8),
-                        InkWell(
-                          onTap: () => _removeProject(index),
-                          child: Icon(
-                            Icons.close,
-                            size: 14,
-                            color: Colors.grey.shade600,
+                              if (_branches[project.path] != null)
+                                Text(
+                                  _branches[project.path]!,
+                                  style: TextStyle(
+                                    color: Colors.grey.shade600,
+                                    fontSize: 10,
+                                  ),
+                                ),
+                            ],
                           ),
-                        ),
-                      ],
+                          const SizedBox(width: 8),
+                          InkWell(
+                            onTap: () => _removeProject(index),
+                            child: Icon(
+                              Icons.close,
+                              size: 14,
+                              color: Colors.grey.shade600,
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 );
